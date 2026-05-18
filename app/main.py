@@ -1,0 +1,103 @@
+import logging
+import logging_loki
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+from prometheus_fastapi_instrumentator import Instrumentator
+import structlog
+import uvicorn
+
+from app.database import create_tables, close_engine
+from app.router import router
+from app.config import settings
+
+
+def configure_logging():
+    loki_handler = logging_loki.LokiHandler(
+        url=f"{settings.loki_url}/loki/api/v1/push",
+        tags={"service": "model-processing-service"},
+        version="1",
+    )
+
+    formatter = structlog.stdlib.ProcessorFormatter(
+        processors=[
+            structlog.stdlib.ProcessorFormatter.remove_processors_meta,
+            structlog.dev.ConsoleRenderer()
+            if settings.log_level == "DEBUG"
+            else structlog.processors.JSONRenderer(),
+        ],
+        foreign_pre_chain=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+        ],
+    )
+
+    handler = logging.StreamHandler()
+    handler.setFormatter(formatter)
+
+    root_logger = logging.getLogger()
+    root_logger.addHandler(handler)
+    root_logger.addHandler(loki_handler)
+    root_logger.setLevel(logging.getLevelName(settings.log_level))
+
+    structlog.configure(
+        processors=[
+            structlog.contextvars.merge_contextvars,
+            structlog.processors.add_log_level,
+            structlog.processors.TimeStamper(fmt="iso"),
+            structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
+        ],
+        wrapper_class=structlog.make_filtering_bound_logger(
+            logging.getLevelName(settings.log_level)
+        ),
+        context_class=dict,
+        logger_factory=structlog.stdlib.LoggerFactory(),
+    )
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    configure_logging()
+    log = structlog.get_logger(__name__)
+
+    await create_tables()
+
+    log.info("Model processing service started")
+    log.info(f"Models directory: {settings.models_dir}")
+    yield
+    await close_engine()
+    log.info("Model processing service stopped")
+
+
+def create_app() -> FastAPI:
+    app = FastAPI(
+        title="Model Processing Service",
+        description=(
+            "The service to work with models"
+        ),
+        version="0.1.0",
+        lifespan=lifespan,
+        root_path="/model"
+    )
+    app.include_router(router)
+    return app
+
+
+app = create_app()
+Instrumentator().instrument(app).expose(app)
+
+
+def run():
+    uvicorn.run(
+        "app.main:app",
+        host=settings.app_host,
+        port=settings.app_port,
+        reload=False,
+        log_level=settings.log_level.lower(),
+    )
+
+
+if __name__ == "__main__":
+    run()
+
