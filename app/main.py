@@ -11,11 +11,23 @@ from app.database import create_tables, close_engine
 from app.router import router
 from app.config import settings
 
+SERVICE_LOGGER_NAME = "model_processing_service"
+
 
 def configure_logging():
+    root_logger = logging.getLogger()
+    existing_service_handlers = [
+        handler
+        for handler in root_logger.handlers
+        if getattr(handler, "_model_processing_service_handler", False)
+    ]
+    for handler in existing_service_handlers:
+        root_logger.removeHandler(handler)
+        handler.close()
+
     loki_handler = logging_loki.LokiHandler(
         url=f"{settings.loki_url}/loki/api/v1/push",
-        tags={"service": "model-processing-service"},
+        tags={"service": SERVICE_LOGGER_NAME},
         version="1",
     )
 
@@ -35,8 +47,9 @@ def configure_logging():
 
     handler = logging.StreamHandler()
     handler.setFormatter(formatter)
+    handler._model_processing_service_handler = True
 
-    root_logger = logging.getLogger()
+    loki_handler._model_processing_service_handler = True
     root_logger.addHandler(handler)
     root_logger.addHandler(loki_handler)
     root_logger.setLevel(logging.getLevelName(settings.log_level))
@@ -100,4 +113,3 @@ def run():
 
 if __name__ == "__main__":
     run()
-
