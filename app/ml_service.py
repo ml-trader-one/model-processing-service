@@ -155,7 +155,7 @@ def predict_next_close(
 
     if len(df) < settings.min_candles_predict:
         raise ValueError(
-            f"Not enough candles for predictions: {len(df)} < {settings.MIN_CANDLES_PREDICT}."
+            f"Not enough candles for predictions: {len(df)} < {settings.min_candles_predict}."
         )
 
     df = add_technical_features(df)
