@@ -238,7 +238,7 @@ async def best_models():
 
 
 @router.post(
-    "/",
+    "/predict",
     response_model=PredictResponse,
     summary="Prediction of close price for the next day",
     tags=["Prediction"],
@@ -274,4 +274,3 @@ async def predict(request: PredictRequest):
 @router.get("/health", tags=["Health"])
 async def health():
     return {"status": "ok"}
-
