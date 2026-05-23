@@ -9,9 +9,10 @@ RUN pip install --no-cache-dir uv
 WORKDIR /app
 
 COPY pyproject.toml /app/
-COPY ./app /app/app
 
 RUN uv pip install --system .
+
+COPY ./app /app/app
 
 EXPOSE 8000
 

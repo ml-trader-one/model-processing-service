@@ -30,6 +30,8 @@ class Settings(BaseSettings):
     postgres_user: str = Field("postgres", alias="POSTGRES_USER")
     postgres_password: str = Field("postgres", alias="POSTGRES_PASSWORD")
 
+    mlflow_uri: str = Field("http://market_mlflow:5000", alias="MLFLOW_URI")
+
     loki_url: str = Field("localhost:3100", alias="LOKI_URL")
 
     @property
