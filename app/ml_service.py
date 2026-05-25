@@ -5,10 +5,13 @@ from pathlib import Path
 from datetime import datetime, timedelta
 import json
 import structlog
+import mlflow
+import mlflow.pyfunc
 
 from app.config import settings
 
 logger = structlog.get_logger(__name__)
+mlflow.set_tracking_uri(settings.mlflow_uri)
 
 
 def _model_key(instrument_uid: str, interval: str) -> str:
@@ -83,56 +86,145 @@ def train_model(
             f"Not enough candles to train: {len(df)} < {settings.min_candles_train}. "
         )
 
-    df = add_technical_features(df)
+    mlflow.set_experiment(f"Price_Predictor_{instrument_uid}_{interval}")
 
-    df["item_id"] = instrument_uid
-    df = df.rename(columns={"time": "timestamp", settings.target: "target"})
+    with mlflow.start_run(run_name=f"{instrument_uid}_{interval}") as run:
+        time_limit = time_limit or settings.training_time_limit
 
-    ts_df = TimeSeriesDataFrame.from_data_frame(
-        df[["item_id", "timestamp", "target"] + KNOWN_COVARIATES],
-        id_column="item_id",
-        timestamp_column="timestamp",
-    )
+        mlflow.log_params({
+            "instrument_uid": instrument_uid,
+            "interval": interval,
+            "time_limit": time_limit,
+            "training_samples": len(df),
+            "prediction_length": settings.prediction_length,
+            "min_candles_train": settings.min_candles_train,
+            "known_covariates": str(KNOWN_COVARIATES),
+        })
 
-    path = _model_path(instrument_uid, interval)
-    time_limit = time_limit or settings.training_time_limit
+        candles_from = df["time"].min().isoformat() if "time" in df else df.index.min().isoformat()
+        candles_to = df["time"].max().isoformat() if "time" in df else df.index.max().isoformat()
+        mlflow.set_tags({
+            "dataset_start": candles_from,
+            "dataset_end": candles_to,
+            "auto_gluon_version": "1.4.0"
+        })
 
-    predictor = TimeSeriesPredictor(
-        path=str(path),
-        prediction_length=settings.prediction_length,
-        target="target",
-        known_covariates_names=KNOWN_COVARIATES,
-        eval_metric="MAPE",
-        freq=interval,
-    )
-    predictor.fit(ts_df, time_limit=time_limit, presets="medium_quality")
+        df = add_technical_features(df)
 
-    leaderboard = predictor.leaderboard(ts_df, silent=True)
-    best_model = leaderboard.iloc[0]["model"]
-    best_mape = float(leaderboard.iloc[0]["score_val"])
+        df["item_id"] = instrument_uid
+        df = df.rename(columns={"time": "timestamp", settings.target: "target"})
 
-    meta = {
-        "instrument_uid": instrument_uid,
-        "interval": interval,
-        "trained_at": datetime.now().isoformat(),
-        "training_samples": len(df),
-        "best_model": best_model,
-        "mape": best_mape,
-        "known_covariates": KNOWN_COVARIATES,
-        "leaderboard": leaderboard.to_dict(orient="records"),
-        "candles_from": df["timestamp"].min().isoformat(),
-        "candles_to": df["timestamp"].max().isoformat(),
-    }
-    with open(path / "meta.json", "w") as f:
-        json.dump(meta, f, indent=2)
+        exclude_cols = {"item_id", "timestamp", "target", "open", "high", "low", "close", "volume"}
+        dynamic_covariates = [col for col in df.columns if col not in exclude_cols]
 
-    logger.info(
-        f"[{instrument_uid} / {interval}] Train ended. "
-        f"Best model: {best_model}, MAPE: {best_mape:.4f}"
-    )
-    return meta
+        mlflow.log_dict({"features": dynamic_covariates}, "features_list.json")
+
+        mlflow.log_param("total_features", len(dynamic_covariates))
+
+        mlflow.log_params({
+            "time_limit": time_limit,
+            "prediction_length": settings.prediction_length,
+            "min_candles_train": settings.min_candles_train,
+        })
+
+        candles_from = df["timestamp"].min().isoformat()
+        candles_to = df["timestamp"].max().isoformat()
+        mlflow.set_tags({
+            "dataset_start": candles_from,
+            "dataset_end": candles_to,
+            "auto_gluon_version": "1.4.0"
+        })
+
+        ts_df = TimeSeriesDataFrame.from_data_frame(
+            df[["item_id", "timestamp", "target"] + dynamic_covariates],
+            id_column="item_id",
+            timestamp_column="timestamp",
+        )
+
+        path = _model_path(instrument_uid, interval)
+
+        predictor = TimeSeriesPredictor(
+            path=str(path),
+            prediction_length=settings.prediction_length,
+            target="target",
+            # known_covariates_names=dynamic_covariates,
+            eval_metric="MAPE",
+            freq=interval,
+        )
+
+        predictor.fit(ts_df, time_limit=time_limit, presets="medium_quality")
+
+        leaderboard = predictor.leaderboard(ts_df, silent=True)
+        best_model = leaderboard.iloc[0]["model"]
+
+        best_mape = abs(float(leaderboard.iloc[0]["score_val"]))
+
+        mlflow.log_metric("best_mape", best_mape)
+        mlflow.log_param("best_model_name", best_model)
+        mlflow.log_metric("total_models_trained", len(leaderboard))
+
+        for _, row in leaderboard.iterrows():
+            m_name = str(row["model"])
+            clean_name = m_name.replace("[", "_").replace("]", "").replace(" ", "_")
+
+            if pd.notnull(row.get("score_val")):
+                mlflow.log_metric(f"mape_{clean_name}", abs(float(row["score_val"])))
+
+            if pd.notnull(row.get("fit_time")):
+                mlflow.log_metric(f"fit_time_{clean_name}", float(row["fit_time"]))
+
+        meta = {
+            "instrument_uid": instrument_uid,
+            "interval": interval,
+            "trained_at": datetime.now().isoformat(),
+            "training_samples": len(df),
+            "best_model": best_model,
+            "mape": best_mape,
+            "past_covariates": dynamic_covariates,
+            "leaderboard": leaderboard.to_dict(orient="records"),
+            "candles_from": df["timestamp"].min().isoformat(),
+            "candles_to": df["timestamp"].max().isoformat(),
+        }
+
+        with open(path / "meta.json", "w") as f:
+            json.dump(meta, f, indent=2)
+
+        leaderboard_csv_path = path / "leaderboard.csv"
+        leaderboard.to_csv(leaderboard_csv_path, index=False)
+
+        class AutoGluonTSWrapper(mlflow.pyfunc.PythonModel):
+            def load_context(self, context):
+                from autogluon.timeseries import TimeSeriesPredictor
+                # Загружаем модель из артефактов при старте
+                self.model = TimeSeriesPredictor.load(context.artifacts["ag_model_path"])
+
+            def predict(self, context, model_input):
+                # model_input - это TimeSeriesDataFrame, который придет на вход
+                return self.model.predict(model_input)
+
+        # 2. Логируем модель в MLflow (это добавит её во вкладку Models!)
+        mlflow.pyfunc.log_model(
+            artifact_path="model",  # Папка внутри артефактов MLflow
+            python_model=AutoGluonTSWrapper(),
+            artifacts={"ag_model_path": str(path)},  # Указываем путь к папке AutoGluon, чтобы MLflow забрал её с собой
+            registered_model_name=f"Price_Predictor_{instrument_uid}_{interval}"
+            # Имя, под которым модель появится в Model Registry
+        )
+
+        mlflow.log_artifacts(str(path), artifact_path=f"{instrument_uid}_{interval}")
+
+        logger.info(
+            f"[{instrument_uid} / {interval}] Train ended. "
+            f"Best model: {best_model}, MAPE: {best_mape:.4f}. MLflow Run ID: {run.info.run_id}"
+        )
+
+        return meta
 
 
+_PREDICTOR_CACHE = {}
+
+
+@mlflow.trace(name="predict_next_close")
 def predict_next_close(
         interval: str,
         df: pd.DataFrame,
@@ -145,37 +237,44 @@ def predict_next_close(
 
     path = _model_path(instrument_uid, interval)
     if not path.exists():
-        raise FileNotFoundError(
-            f"Model not found: instrument_uid={instrument_uid!r}, interval={interval!r}. "
-            "First the model should be trained with POST /train"
-        )
+        raise FileNotFoundError(f"Model not found: instrument_uid={instrument_uid!r}, interval={interval!r}.")
 
     with open(path / "meta.json") as f:
         meta = json.load(f)
 
     if len(df) < settings.min_candles_predict:
-        raise ValueError(
-            f"Not enough candles for predictions: {len(df)} < {settings.min_candles_predict}."
-        )
+        raise ValueError(f"Not enough candles for predictions: {len(df)}")
 
+    # Генерируем фичи (здесь тоже будут отброшены первые N свечей из-за скользящих средних)
     df = add_technical_features(df)
 
+    # Берем последнее значение ИМЕННО ПОСЛЕ dropna, чтобы не взять пустоту
     last_close = float(df["close"].iloc[-1])
     last_candle_time = df["time"].iloc[-1]
 
     df["item_id"] = instrument_uid
     df = df.rename(columns={"time": "timestamp", settings.target: "target"})
 
+    # Достаем список фичей, на которых училась конкретно эта модель.
+    # Fallback на KNOWN_COVARIATES нужен для старых моделей, созданных до внедрения динамики
+    trained_covariates = meta.get("past_covariates", meta.get("known_covariates", []))
+
     ts_df = TimeSeriesDataFrame.from_data_frame(
-        df[["item_id", "timestamp", "target"] + KNOWN_COVARIATES],
+        df[["item_id", "timestamp", "target"] + trained_covariates],
         id_column="item_id",
         timestamp_column="timestamp",
     )
 
-    predictor = TimeSeriesPredictor.load(str(path))
+    cache_key = f"{instrument_uid}_{interval}"
+    if cache_key not in _PREDICTOR_CACHE:
+        logger.info("Loading model from disk into cache...", key=cache_key)
+        _PREDICTOR_CACHE[cache_key] = TimeSeriesPredictor.load(str(path))
+
+    predictor = _PREDICTOR_CACHE[cache_key]
     predictions = predictor.predict(ts_df)
     predicted_close = float(predictions["mean"].iloc[0])
 
+    # Логика выходных дней для дневок
     next_dt = last_candle_time + timedelta(days=1)
     if interval == "1d":
         while next_dt.weekday() >= 5:

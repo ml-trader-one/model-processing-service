@@ -3,6 +3,7 @@ from typing import Optional
 import structlog
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
+from app.scheduler import scheduler, execute_scheduled_inference
 
 from app.ml_service import train_model, predict_next_close
 from app.repository import fetch_candles, fetch_active_run, audit_start, audit_error, audit_done, fetch_training_runs, \
@@ -274,3 +275,73 @@ async def predict(request: PredictRequest):
 @router.get("/health", tags=["Health"])
 async def health():
     return {"status": "ok"}
+
+
+@router.on_event("startup")
+async def start_scheduler():
+    if not scheduler.running:
+        scheduler.start()
+
+@router.on_event("shutdown")
+async def stop_scheduler():
+    if scheduler.running:
+        scheduler.shutdown()
+
+
+class ScheduleRequest(BaseModel):
+    instrument_uid: str
+    interval: str = "1d"
+    run_id: str = Field(..., description="MLflow Run ID с обученной моделью")
+    cron_expr: str = Field(..., description="CRON выражение, например '0 * * * *' (раз в час)")
+
+
+@router.post("/inference/schedule", tags=["Inference"])
+async def schedule_inference(req: ScheduleRequest):
+    job_id = f"job_{req.instrument_uid}_{req.interval}"
+
+    parts = req.cron_expr.split()
+    if len(parts) != 5:
+        raise HTTPException(400, "Invalid CRON expression")
+
+    minute, hour, day, month, day_of_week = parts
+
+    job = scheduler.add_job(
+        execute_scheduled_inference,
+        trigger="cron",
+        minute=minute,
+        hour=hour,
+        day=day,
+        month=month,
+        day_of_week=day_of_week,
+        id=job_id,
+        replace_existing=True,
+        kwargs={
+            "instrument_uid": req.instrument_uid,
+            "interval": req.interval,
+            "run_id": req.run_id
+        }
+    )
+
+    return {"status": "scheduled", "job_id": job.id, "next_run": job.next_run_time.isoformat()}
+
+
+@router.get("/inference/jobs", tags=["Inference"])
+async def list_jobs():
+    jobs = scheduler.get_jobs()
+    return {
+        "jobs": [
+            {
+                "id": j.id,
+                "next_run": j.next_run_time.isoformat() if j.next_run_time else None
+            }
+            for j in jobs
+        ]
+    }
+
+
+@router.delete("/inference/jobs/{job_id}", tags=["Inference"])
+async def remove_job(job_id: str):
+    if scheduler.get_job(job_id):
+        scheduler.remove_job(job_id)
+        return {"status": "removed", "job_id": job_id}
+    raise HTTPException(404, "Job not found")
