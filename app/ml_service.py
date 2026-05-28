@@ -195,20 +195,16 @@ def train_model(
         class AutoGluonTSWrapper(mlflow.pyfunc.PythonModel):
             def load_context(self, context):
                 from autogluon.timeseries import TimeSeriesPredictor
-                # Загружаем модель из артефактов при старте
                 self.model = TimeSeriesPredictor.load(context.artifacts["ag_model_path"])
 
             def predict(self, context, model_input):
-                # model_input - это TimeSeriesDataFrame, который придет на вход
                 return self.model.predict(model_input)
 
-        # 2. Логируем модель в MLflow (это добавит её во вкладку Models!)
         mlflow.pyfunc.log_model(
-            artifact_path="model",  # Папка внутри артефактов MLflow
+            artifact_path="model",
             python_model=AutoGluonTSWrapper(),
-            artifacts={"ag_model_path": str(path)},  # Указываем путь к папке AutoGluon, чтобы MLflow забрал её с собой
+            artifacts={"ag_model_path": str(path)},
             registered_model_name=f"Price_Predictor_{instrument_uid}_{interval}"
-            # Имя, под которым модель появится в Model Registry
         )
 
         mlflow.log_artifacts(str(path), artifact_path=f"{instrument_uid}_{interval}")
@@ -245,18 +241,14 @@ def predict_next_close(
     if len(df) < settings.min_candles_predict:
         raise ValueError(f"Not enough candles for predictions: {len(df)}")
 
-    # Генерируем фичи (здесь тоже будут отброшены первые N свечей из-за скользящих средних)
     df = add_technical_features(df)
 
-    # Берем последнее значение ИМЕННО ПОСЛЕ dropna, чтобы не взять пустоту
     last_close = float(df["close"].iloc[-1])
     last_candle_time = df["time"].iloc[-1]
 
     df["item_id"] = instrument_uid
     df = df.rename(columns={"time": "timestamp", settings.target: "target"})
 
-    # Достаем список фичей, на которых училась конкретно эта модель.
-    # Fallback на KNOWN_COVARIATES нужен для старых моделей, созданных до внедрения динамики
     trained_covariates = meta.get("past_covariates", meta.get("known_covariates", []))
 
     ts_df = TimeSeriesDataFrame.from_data_frame(
@@ -274,7 +266,6 @@ def predict_next_close(
     predictions = predictor.predict(ts_df)
     predicted_close = float(predictions["mean"].iloc[0])
 
-    # Логика выходных дней для дневок
     next_dt = last_candle_time + timedelta(days=1)
     if interval == "1d":
         while next_dt.weekday() >= 5:
