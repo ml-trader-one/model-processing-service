@@ -10,6 +10,9 @@ WORKDIR /app
 
 COPY pyproject.toml /app/
 
+# Install CPU version of PyTorch to reduce image size by ~2GB (avoid CUDA libraries)
+RUN uv pip install --system torch==2.1.2+cpu --index-url https://download.pytorch.org/whl/cpu
+
 RUN uv pip install --system .
 
 COPY ./app /app/app
