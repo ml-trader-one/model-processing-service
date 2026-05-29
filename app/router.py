@@ -19,7 +19,7 @@ class TrainRequest(BaseModel):
         default="e6123145-9665-43e0-8413-cd61b8aa9b13",
         description="Unique instrument's id"
     )
-    interval: str = Field(default="1d", description="Candles' timeframe: 1d, 1h, 5m и т.д.")
+    interval: str = Field(default="1DAY", description="Candles' timeframe: 1DAY, 1HOUR, 5MIN и т.д.")
     time_limit: Optional[int] = Field(
         None, ge=30, le=3600, description="Training limit in seconds (config value is used by default)"
     )
@@ -27,7 +27,7 @@ class TrainRequest(BaseModel):
     model_config = {"json_schema_extra": {
         "example": {
             "instrument_uid": "e6123145-9665-43e0-8413-cd61b8aa9b13",
-            "interval": "1d",
+            "interval": "1DAY",
             "time_limit": 120,
         }
     }}
@@ -48,7 +48,7 @@ class PredictRequest(BaseModel):
         default="e6123145-9665-43e0-8413-cd61b8aa9b13",
         description="Unique instrument's id"
     )
-    interval: str = Field(default="1d", description="Candles' timeframe")
+    interval: str = Field(default="1DAY", description="Candles' timeframe")
     lookback: Optional[int] = Field(
         None, ge=30, le=500,
         description="The amount of candles to fetch from db (config value is used by default)"
@@ -57,7 +57,7 @@ class PredictRequest(BaseModel):
     model_config = {"json_schema_extra": {
         "example": {
             "instrument_uid": "e6123145-9665-43e0-8413-cd61b8aa9b13",
-            "interval": "1d",
+            "interval": "1DAY",
             "lookback": 60,
         }
     }}
@@ -189,7 +189,7 @@ async def list_runs(
         instrument_uid: Optional[str] = Query(
             "e6123145-9665-43e0-8413-cd61b8aa9b13", description="Instrument filter"
         ),
-        interval: Optional[str] = Query("1d", description="Timeframe filter"),
+        interval: Optional[str] = Query("1DAY", description="Timeframe filter"),
         status: Optional[str] = Query(None, description="running | done | error"),
         limit: int = Query(50, ge=1, le=200),
         offset: int = Query(0, ge=0),
@@ -290,7 +290,7 @@ async def stop_scheduler():
 
 class ScheduleRequest(BaseModel):
     instrument_uid: str
-    interval: str = "1d"
+    interval: str = "1DAY"
     run_id: str = Field(..., description="MLflow Run ID с обученной моделью")
     cron_expr: str = Field(..., description="CRON выражение, например '0 * * * *' (раз в час)")
 

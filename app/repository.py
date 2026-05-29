@@ -12,7 +12,7 @@ logger = structlog.get_logger(__name__)
 
 async def fetch_candles(
         instrument_uid: str = "e6123145-9665-43e0-8413-cd61b8aa9b13",
-        interval: str = "1d",
+        interval: str = "1DAY",
         limit: Optional[int] = None,
 ) -> pd.DataFrame:
     if limit is not None:
