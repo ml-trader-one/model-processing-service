@@ -15,6 +15,7 @@ dependencies = [
     "prometheus-fastapi-instrumentator>=0.9",
     "python-logging-loki>=0.3",
     "pandas>=2.2.0",
+    "numpy>=1.26.0,<2",
     "autogluon.timeseries==1.4.0",
     "mlflow==3.12.0",
     "apscheduler>=3.10.0",
