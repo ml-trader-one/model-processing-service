@@ -58,14 +58,15 @@ jobs:
           GITHUB_OWNER: ${{ github.repository_owner }}
           INVEST_TOKEN: ${{ secrets.INVEST_TOKEN }}
           GITHUB_SHA: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           host: ${{ secrets.SERVER_IP }}
           username: ${{ secrets.SERVER_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: GITHUB_OWNER,INVEST_TOKEN,GITHUB_SHA
+          envs: GITHUB_OWNER,INVEST_TOKEN,GITHUB_SHA,GITHUB_TOKEN
           script: |
             cd /opt/automl
-            echo "${{ secrets.CR_PAT }}" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
+            echo "$GITHUB_TOKEN" | docker login ghcr.io -u ${{ github.actor }} --password-stdin
             export GITHUB_REPOSITORY_OWNER=$GITHUB_OWNER
             export INVEST_TOKEN=$INVEST_TOKEN
             export MODEL_IMAGE_TAG=sha-${GITHUB_SHA:0:7}
